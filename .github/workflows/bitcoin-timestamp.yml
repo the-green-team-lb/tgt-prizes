@@ -1,0 +1,73 @@
+name: Bitcoin Timestamp
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'timestamps/**'
+      - 'TIMESTAMPS.md'
+
+jobs:
+  timestamp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute codebase hash
+        run: |
+          # Hash all source files deterministically (sorted, excluding generated/build files)
+          HASH=$(find . -type f \
+            \( -name "*.ts" -o -name "*.tsx" -o -name "*.css" -o -name "*.js" -o -name "*.json" \) \
+            ! -path "./node_modules/*" \
+            ! -path "./.next/*" \
+            ! -path "./convex/_generated/*" \
+            ! -path "./timestamps/*" \
+            ! -path "./package-lock.json" \
+            | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          echo "CODE_HASH=$HASH" >> $GITHUB_ENV
+          echo "Code hash: $HASH"
+
+      - name: Install OpenTimestamps
+        run: pip install opentimestamps-client
+
+      - name: Stamp hash on Bitcoin blockchain
+        run: |
+          # Write the hash to a file and stamp it
+          echo -n "$CODE_HASH" > /tmp/code-hash.txt
+          ots stamp /tmp/code-hash.txt
+          mkdir -p timestamps
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          cp /tmp/code-hash.txt.ots "timestamps/${COMMIT_SHORT}.ots"
+
+      - name: Update timestamp log
+        run: |
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          # Create TIMESTAMPS.md header if it doesn't exist
+          if [ ! -f TIMESTAMPS.md ]; then
+            cat > TIMESTAMPS.md << 'HEADER'
+          # Bitcoin Timestamps
+
+          Every code change to this site is automatically hashed and timestamped on the Bitcoin blockchain via [OpenTimestamps](https://opentimestamps.org).
+
+          **How to verify:** Take any code hash below, download the matching `.ots` proof file from the `timestamps/` folder, and verify it at [opentimestamps.org](https://opentimestamps.org) or with the `ots verify` command.
+
+          | Date (UTC) | Code Hash | Commit | Description |
+          |------------|-----------|--------|-------------|
+          HEADER
+          fi
+
+          # Append new entry
+          echo "| $TIMESTAMP | \`$CODE_HASH\` | [\`$COMMIT_SHORT\`](https://github.com/the-green-team-lb/tgt-prizes/commit/$COMMIT_SHORT) | $COMMIT_MSG |" >> TIMESTAMPS.md
+
+      - name: Commit and push proof
+        run: |
+          git config user.name "The Green Team"
+          git config user.email "the-green-team@users.noreply.github.com"
+          git add timestamps/ TIMESTAMPS.md
+          git diff --staged --quiet || git commit -m "stamp: Bitcoin timestamp for $(git rev-parse --short HEAD)"
+          git push
